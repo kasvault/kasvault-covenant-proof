@@ -1,0 +1,23 @@
+{
+  "authorizing_outpoint": {
+    "transactionId": "35d9d44b309d1f7f3d45cf89bb48c15c289ed9577d65b1574610dee84156f941",
+    "index": 7
+  },
+  "outputs": [
+    {
+      "index": 0,
+      "value": 2000000000,
+      "abi_index": 0,
+      "contract": "VaultV8",
+      "runtime_state": {
+        "kas":       { "kind": "int",      "value": 2000000000 },
+        "tok":       { "kind": "int",      "value": 0 },
+        "spentToday":{ "kind": "int",      "value": 0 },
+        "rolloverAt":{ "kind": "int", "value": 1791125242552 },
+        "buyCount":  { "kind": "int",      "value": 0 },
+        "minTokens": { "kind": "int",      "value": 33 },
+        "dayLimit":  { "kind": "int",      "value": 3000000000 }
+      }
+    }
+  ]
+}
