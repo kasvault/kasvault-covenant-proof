@@ -1,0 +1,75 @@
+pragma silverscript ^0.1.0;
+
+// KasVault Buyback-Vault v8 — drift-frei, agent-gebunden.
+// Aenderungen ggue. v7:
+//   1. BUY IST AGENT-SIGNIERT (checkSig) — kein permissionless Spend mehr.
+//   2. RESERVE-CHECK DRIFT-FREI: tx.outputs[0].value == tx.inputs[0].value + kasIn
+//      (Curve-Input ist Index 0 der Buy-Tx) — KEIN Spiegel, KEIN reparam-Deadlock
+//      bei Fremdtrades. Sicherheit: nur der Agent kann den Entry ausloesen; die
+//      Invariante verhindert Ueberzahlung; Angreifer ohne Agent-Key kommt gar nicht ran.
+//   3. State ohne curveReserve (7 Felder); reparam nur noch minTokens (Owner).
+// Tx-Form Buy: IN0 Curve, IN1 Ledger, IN2 VAULT, IN3+ Wallet-Funding (Witness).
+contract VaultV8(int initKas, int initTok, int initSpentToday, temporal initRolloverAt,
+                 int initBuyCount, int initMinTokens, int initDayLimit) {
+    int kas = initKas;
+    int tok = initTok;
+    int spentToday = initSpentToday;
+    temporal rolloverAt = initRolloverAt;
+    int buyCount = initBuyCount;
+    int minTokens = initMinTokens;
+    int dayLimit = initDayLimit;
+
+    entry buy(sig s, int kasIn, int tokOut) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(kasIn > 0);
+        require(kasIn <= kas);
+        require(spentToday + kasIn <= dayLimit);
+        require(tokOut >= kasIn * minTokens / 1000000);
+        require(tx.outputs[0].value == tx.inputs[0].value + kasIn);
+        require(tx.outputs[6].value == tx.inputs[this.activeInputIndex].value - kasIn);
+        validateOutputState(6, State { kas: kas - kasIn, tok: tok + tokOut,
+            spentToday: spentToday + kasIn, rolloverAt: rolloverAt, buyCount: buyCount + 1,
+            minTokens: minTokens, dayLimit: dayLimit });
+    }
+
+    entry rollover() {
+        require(tx.time >= rolloverAt);
+        validateOutputState(0, State { kas: kas, tok: tok,
+            spentToday: 0, rolloverAt: rolloverAt + 24 hours, buyCount: buyCount,
+            minTokens: minTokens, dayLimit: dayLimit });
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value <= val - 2000000);
+        require(tx.outputs[0].value >= val - 20000000);
+    }
+
+    // Owner-Reparam: nur noch Token-Floor anpassen (Preis-Drift nach oben).
+    entry reparam(sig s, int newMinTokens) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(newMinTokens >= 100000);
+        require(newMinTokens <= 1000000000000);
+        validateOutputState(0, State { kas: kas, tok: tok,
+            spentToday: spentToday, rolloverAt: rolloverAt, buyCount: buyCount,
+            minTokens: newMinTokens, dayLimit: dayLimit });
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value <= val - 2000000);
+        require(tx.outputs[0].value >= val - 20000000);
+    }
+
+    entry topup(sig s, int amount) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(amount > 0);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val + amount);
+        validateOutputState(0, State { kas: kas + amount, tok: tok,
+            spentToday: spentToday, rolloverAt: rolloverAt, buyCount: buyCount,
+            minTokens: minTokens, dayLimit: dayLimit });
+    }
+
+    entry drain(sig s) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));   // vault_proto-Muster: Covenant endet hier
+    }
+}
