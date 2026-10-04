@@ -1,0 +1,114 @@
+pragma silverscript ^0.1.0;
+
+// KasVault Buyback-Vault v9 (MAINNET) — v8 + Owner-Emergency-Recovery.
+// NEU gegenueber v8:
+//   1. requestRecovery(sig): Owner ODER Backup-Key kuendigt Recovery an (recoverPending=1).
+//   2. cancelRecovery(sig): NUR Primary-Owner bricht eine kuendigung ab.
+//      Schutz: ein kompromittierter Backup-Key ist nutzlos, wenn der Owner
+//      innerhalb der Frist abbricht.
+//   3. executeRecovery(sig): NUR Backup-Key, erst NACH this.ageDaa >= 172800 (~48 h)
+//      (Testnet: ~60 s DAA-Alter des Request-Outputs). Covenant endet (drain-Muster)
+//      — Not-Ausgang, falls der Owner-Key verloren geht.
+//   4. Buy waehrend anstehender Recovery GESPERRT (require recoverPending == 0):
+//      der Agent kann die Frist nicht durch Kaeufe endlos verlaengern.
+//   5. State +1 Feld: recoverPending (0/1). Frist = DAA-Differenz des
+//      Covenant-Inputs, on-chain erzwungen (tx.time erlaubt keine Arithmetik).
+// Tx-Form Buy weiterhin: IN0 Curve, IN1 Ledger, IN2 VAULT, IN3+ Funding.
+contract VaultV9(int initKas, int initTok, int initSpentToday, temporal initRolloverAt,
+                 int initBuyCount, int initMinTokens, int initDayLimit, int initRecoverPending) {
+    int kas = initKas;
+    int tok = initTok;
+    int spentToday = initSpentToday;
+    temporal rolloverAt = initRolloverAt;
+    int buyCount = initBuyCount;
+    int minTokens = initMinTokens;
+    int dayLimit = initDayLimit;
+    int recoverPending = initRecoverPending;
+
+    entry buy(sig s, int kasIn, int tokOut) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(recoverPending == 0);
+        require(kasIn > 0);
+        require(kasIn <= kas);
+        require(spentToday + kasIn <= dayLimit);
+        require(tokOut >= kasIn * minTokens / 1000000);
+        require(tx.outputs[0].value == tx.inputs[0].value + kasIn);
+        require(tx.outputs[6].value == tx.inputs[this.activeInputIndex].value - kasIn);
+        validateOutputState(6, State { kas: kas - kasIn, tok: tok + tokOut,
+            spentToday: spentToday + kasIn, rolloverAt: rolloverAt, buyCount: buyCount + 1,
+            minTokens: minTokens, dayLimit: dayLimit, recoverPending: recoverPending });
+    }
+
+    entry rollover() {
+        require(tx.time >= rolloverAt);
+        validateOutputState(0, State { kas: kas, tok: tok,
+            spentToday: 0, rolloverAt: rolloverAt + 24 hours, buyCount: buyCount,
+            minTokens: minTokens, dayLimit: dayLimit, recoverPending: recoverPending });
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value <= val - 2000000);
+        require(tx.outputs[0].value >= val - 20000000);
+    }
+
+    entry reparam(sig s, int newMinTokens) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(newMinTokens >= 100000);
+        require(newMinTokens <= 1000000000000);
+        validateOutputState(0, State { kas: kas, tok: tok,
+            spentToday: spentToday, rolloverAt: rolloverAt, buyCount: buyCount,
+            minTokens: newMinTokens, dayLimit: dayLimit, recoverPending: recoverPending });
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value <= val - 2000000);
+        require(tx.outputs[0].value >= val - 20000000);
+    }
+
+    entry topup(sig s, int amount) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(amount > 0);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val + amount);
+        validateOutputState(0, State { kas: kas + amount, tok: tok,
+            spentToday: spentToday, rolloverAt: rolloverAt, buyCount: buyCount,
+            minTokens: minTokens, dayLimit: dayLimit, recoverPending: recoverPending });
+    }
+
+    entry drain(sig s) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));   // Covenant endet hier — normaler Owner-Exit
+    }
+
+    // ---- NEU: Emergency-Recovery -------------------------------------
+    entry requestRecovery(sig s) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        pubkey backup = pubkey(0xf910d8b9e3e6a6b1eb37341a26dff8eb7862ed5a8e833cd0f1056005a6f6ab72);
+        require(checkSig(s, owner) || checkSig(s, backup));
+        require(recoverPending == 0);
+        validateOutputState(0, State { kas: kas, tok: tok,
+            spentToday: spentToday, rolloverAt: rolloverAt, buyCount: buyCount,
+            minTokens: minTokens, dayLimit: dayLimit, recoverPending: 1 });
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value <= val - 2000000);
+        require(tx.outputs[0].value >= val - 20000000);
+    }
+
+    entry cancelRecovery(sig s) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(recoverPending == 1);
+        validateOutputState(0, State { kas: kas, tok: tok,
+            spentToday: spentToday, rolloverAt: rolloverAt, buyCount: buyCount,
+            minTokens: minTokens, dayLimit: dayLimit, recoverPending: 0 });
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value <= val - 2000000);
+        require(tx.outputs[0].value >= val - 20000000);
+    }
+
+    entry executeRecovery(sig s) {
+        pubkey backup = pubkey(0xf910d8b9e3e6a6b1eb37341a26dff8eb7862ed5a8e833cd0f1056005a6f6ab72);
+        require(checkSig(s, backup));
+        require(recoverPending == 1);
+        require(this.ageDaa >= 172800);   // ~48 h ab Request-Confirm (DAA)
+    }
+}
