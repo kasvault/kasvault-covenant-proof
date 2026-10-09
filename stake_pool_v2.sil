@@ -1,0 +1,93 @@
+pragma silverscript ^0.1.0;
+
+// KasVault Staking-Pool v2 — Fee-Stream-Staking, selbsttragende Claims + Drain.
+//
+// v1 (Prototyp, CovId 2dcc2fd2…) bleibt unveraenderlich aktiv; v2 ist das
+// Migration-Ziel. Aenderungen gegenueber v1:
+//   - stake: Staker zahlt Stake-Fee 0,1 KAS in den Pool (Puffer); sie wird
+//     sofort pro-rata via Index an ALLE Staker verteilt (inkl. dem neuen).
+//     Pool-UTXO-Wert steigt um stakeFee (Funding-Input zahlt sie).
+//   - claim: Claim-Fee 0,05 KAS wird AUS DEM PAYOUT gezogen (OUT2 -> Agent-
+//     Fee-Budget) — Claims sind selbsttragend, kein Agent-Wallet-Funding mehr.
+//     OUT1 = Staker-Auszahlung (payout - claimFee), beide Werte erzwungen.
+//   - drain: Owner-only Exit (Kasware-Sig, Registry-creatorPubkey) — kas
+//     laesst sich gezielt in einen Re-Deploy ueberfuehren (Migration ohne
+//     Frozen-Funds wie bei v1). Carrier-Floor 0,5 KAS bleibt erzwungen.
+//   - topup/unstake: unveraendert zu v1 (sig-frei bzw. Agent-Sig).
+// Tx-Konventionen (Tooling):
+//   IN0 = Pool-UTXO, OUT0 = Pool-Nachfolger. Stake/Unstake zusaetzlich:
+//   IN1 = KCC20-Ledger, IN2 = Pool-Tokens (bzw. Staker-Holdings bei stake),
+//   Funding-P2PK dahinter. Claim: OUT1 Staker, OUT2 Fee. Drain: OUT1 Owner.
+contract StakePoolV2(int initKas, int initTotalTok, int initRewardPerTok, int initDeposits) {
+    int kas = initKas;                // Reward-Kapital (Sompi), == UTXO-Wert - Carrier
+    int totalTok = initTotalTok;      // gestakte Token gesamt
+    int rewardPerTok = initRewardPerTok; // kumulativer Index (1e6-Skala, Overflow-Guard)
+    int deposits = initDeposits;      // Lifetime-Stake-Zaehler (Audit-Metrik)
+
+    // --- Rewards fuettern: jeder darf, nur Erhoehung moeglich ------------
+    entry topup(int kasIn) {
+        require(kasIn > 0);
+        require(totalTok > 0);        // Index-Mathe braucht Staker (Seed-first)
+        int newIdx = rewardPerTok + kasIn * 1000000 / totalTok;
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val + kasIn);
+        validateOutputState(0, State { kas: kas + kasIn, totalTok: totalTok,
+            rewardPerTok: newIdx, deposits: deposits });
+    }
+
+    // --- Tokens staken: Stake-Fee 0,1 KAS in den Pool (sofort verteilt) ---
+    entry stake(sig s, int tokIn) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));  // Relayer baut/validiert Registry-Eintrag
+        require(tokIn > 0);
+        int stakeFee = 10000000;      // 0,1 KAS Puffer je Stake
+        int newIdx = rewardPerTok + stakeFee * 1000000 / (totalTok + tokIn);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val + stakeFee);
+        validateOutputState(0, State { kas: kas + stakeFee, totalTok: totalTok + tokIn,
+            rewardPerTok: newIdx, deposits: deposits + 1 });
+    }
+
+    // --- Claim auszahlen: Fee aus dem Payout, selbsttragend ---------------
+    entry claim(sig s, int payout) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(payout > 0);
+        require(payout <= kas);       // Pool kann nie negativ werden
+        int claimFee = 5000000;       // 0,05 KAS aus dem Payout
+        require(payout > claimFee);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val - payout);
+        require(tx.outputs[0].value >= 50000000);        // Pool-Carrier >= 0,5 KAS
+        require(tx.outputs[1].value == payout - claimFee); // Staker-Auszahlung
+        require(tx.outputs[2].value == claimFee);          // Fee -> Agent-Budget
+        validateOutputState(0, State { kas: kas - payout, totalTok: totalTok,
+            rewardPerTok: rewardPerTok, deposits: deposits });
+    }
+
+    // --- Unstake: Token-Rueckgabe (KCC20-Seite: presence-owned Target) ----
+    entry unstake(sig s, int tokOut) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(tokOut > 0);
+        require(tokOut <= totalTok);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val);
+        validateOutputState(0, State { kas: kas, totalTok: totalTok - tokOut,
+            rewardPerTok: rewardPerTok, deposits: deposits });
+    }
+
+    // --- Drain: Owner-only Exit (Kasware) fuer Migration/Re-Deploy --------
+    entry drain(sig s, int amount) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(amount > 0);
+        require(amount <= kas);       // nur Reward-Kapital, nie den Carrier
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val - amount);
+        require(tx.outputs[0].value >= 50000000); // Carrier bleibt gesichert
+        require(tx.outputs[1].value == amount);   // Owner-Auszahlung
+        validateOutputState(0, State { kas: kas - amount, totalTok: totalTok,
+            rewardPerTok: rewardPerTok, deposits: deposits });
+    }
+}
