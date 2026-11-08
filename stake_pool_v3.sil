@@ -1,0 +1,107 @@
+pragma silverscript ^0.1.0;
+
+// KasVault Staking-Pool v3 — fee-stream staking on Kaspa L1.
+//
+// Stakers deposit kvault and earn the curve's creator fees pro-rata through an
+// on-chain distribution index. Reward capital can only leave through the claim
+// formula or the owner's drain entry; there is no permissionless entry at all.
+//
+// v3 changes over v2 (live since 2026-10-17):
+//   - No permissionless entries. topup, stake, claim and unstake all require the
+//     agent signature. Rationale (measured on mainnet, 2026-10-17): a KCC20
+//     covenant-held token cell can be moved by ANY valid transition of the
+//     covenant family, presence alone is not a lock. So a staking covenant that
+//     holds KCC20 tokens must never expose an unsigned entry.
+//   - stake: the staker pays a 0.1 KAS stake fee into the pool. It is
+//     distributed to all stakers immediately via the index, the new staker
+//     included. The pool UTXO value rises by stakeFee (a funding input pays it).
+//   - claim: a 0.05 KAS claim fee is taken OUT OF THE PAYOUT (OUT2 goes to the
+//     agent fee budget), so claims fund themselves. OUT1 is the staker payout
+//     (payout - claimFee); both values are enforced by consensus.
+//   - unstake: returns the tokens to the wallet that owns them, OUT0 keeps the
+//     pool state, carrier stays at or above 0.5 KAS.
+//   - drain: owner-only exit (Kasware key, the registry creatorPubkey). Reward
+//     capital can be moved into a re-deploy; the 0.5 KAS carrier floor stays
+//     enforced on-chain.
+//
+// Tx conventions (tooling): IN0 = pool UTXO, OUT0 = pool successor.
+// Stake/unstake additionally: IN1 = KCC20 ledger, IN2 = pool tokens
+// (respectively the staker holdings on stake), funding P2PK behind it.
+// Claim: OUT1 staker, OUT2 fee. Drain: OUT1 owner.
+contract StakePoolV3(int initKas, int initTotalTok, int initRewardPerTok, int initDeposits) {
+    int kas = initKas;                // Reward-Kapital (Sompi), == UTXO-Wert - Carrier
+    int totalTok = initTotalTok;      // gestakte Token gesamt
+    int rewardPerTok = initRewardPerTok; // kumulativer Index (1e6-Skala, Overflow-Guard)
+    int deposits = initDeposits;      // Lifetime-Stake-Zaehler (Audit-Metrik)
+
+    // --- Rewards fuettern: NUR Agent-Sig (v3-SECURITY: kein permissionless Entry —
+    //     empirischer Befund 17.10.: covenantIdOwned-Token hinter JEDER
+    //     validen Familien-Transition verschiebbar, Praesenz reicht) ---------
+    entry topup(sig s, int kasIn) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(kasIn > 0);
+        require(totalTok > 0);        // Index-Mathe braucht Staker (Seed-first)
+        int newIdx = rewardPerTok + kasIn * 1000000 / totalTok;
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val + kasIn);
+        validateOutputState(0, State { kas: kas + kasIn, totalTok: totalTok,
+            rewardPerTok: newIdx, deposits: deposits });
+    }
+
+    // --- Tokens staken: Stake-Fee 0,1 KAS in den Pool (sofort verteilt) ---
+    entry stake(sig s, int tokIn) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));  // Relayer baut/validiert Registry-Eintrag
+        require(tokIn > 0);
+        int stakeFee = 10000000;      // 0,1 KAS Puffer je Stake
+        int newIdx = rewardPerTok + stakeFee * 1000000 / (totalTok + tokIn);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val + stakeFee);
+        validateOutputState(0, State { kas: kas + stakeFee, totalTok: totalTok + tokIn,
+            rewardPerTok: newIdx, deposits: deposits + 1 });
+    }
+
+    // --- Claim auszahlen: Fee aus dem Payout, selbsttragend ---------------
+    entry claim(sig s, int payout) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(payout > 0);
+        require(payout <= kas);       // Pool kann nie negativ werden
+        int claimFee = 5000000;       // 0,05 KAS aus dem Payout
+        require(payout > claimFee);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val - payout);
+        require(tx.outputs[0].value >= 50000000);        // Pool-Carrier >= 0,5 KAS
+        require(tx.outputs[1].value == payout - claimFee); // Staker-Auszahlung
+        require(tx.outputs[2].value == claimFee);          // Fee -> Agent-Budget
+        validateOutputState(0, State { kas: kas - payout, totalTok: totalTok,
+            rewardPerTok: rewardPerTok, deposits: deposits });
+    }
+
+    // --- Unstake: Token-Rueckgabe (KCC20-Seite: presence-owned Target) ----
+    entry unstake(sig s, int tokOut) {
+        pubkey agent = pubkey(0x63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6);
+        require(checkSig(s, agent));
+        require(tokOut > 0);
+        require(tokOut <= totalTok);
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val);
+        validateOutputState(0, State { kas: kas, totalTok: totalTok - tokOut,
+            rewardPerTok: rewardPerTok, deposits: deposits });
+    }
+
+    // --- Drain: Owner-only Exit (Kasware) fuer Migration/Re-Deploy --------
+    entry drain(sig s, int amount) {
+        pubkey owner = pubkey(0x87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad);
+        require(checkSig(s, owner));
+        require(amount > 0);
+        require(amount <= kas);       // nur Reward-Kapital, nie den Carrier
+        int val = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].value == val - amount);
+        require(tx.outputs[0].value >= 50000000); // Carrier bleibt gesichert
+        require(tx.outputs[1].value == amount);   // Owner-Auszahlung
+        validateOutputState(0, State { kas: kas - amount, totalTok: totalTok,
+            rewardPerTok: rewardPerTok, deposits: deposits });
+    }
+}
