@@ -12,9 +12,10 @@ source code with **exactly** these genesis parameters.
 ### StakePool v3 — staking (live since 2026-10-17)
 
 - **Covenant ID:** `598b4b8ebbc51b13b90b338770ce68f8a51df3301ea1320169f69d6b649171eb`
+- **Genesis TX:** [`b91f882b…`](https://kaspa.stream/txs/b91f882b4941562914488aa1d0812d5cf1e9c655d6388c9e6aaa3f5c3a2cad10)
 - **Source:** [`stake_pool_v3.sil`](stake_pool_v3.sil)
-- **Genesis proof:** in preparation. Until it is published here, verify the
-  covenant ID yourself from any mainnet node (see step 3) and read the source.
+- **Genesis state:** `{kas: 2,308,439,450, totalTok: 1,550,000, rewardPerTok: 2,291,083,468, deposits: 4}`,
+  funded from the retired v2 pool, so the distribution index carried over exactly.
 
 `stake_pool_v3.sil` is a Kaspa L1 covenant (SilverScript, consensus-enforced).
 Stakers deposit kvault and earn the curve's creator fees pro-rata via an
@@ -67,6 +68,8 @@ recovery entries `requestRecovery` / `cancelRecovery` / `executeRecovery`.
    ```sh
    ./target/release/argentc genesis verify vault_v10_genesis_proof.json \
        --covenant-id 7a1791e82a1d17d9ddab81fb48ace6688b09d7f6dbe6782dd569426a2b5f455b
+   ./target/release/argentc genesis verify stake_pool_v3_genesis_proof.json \
+       --covenant-id 598b4b8ebbc51b13b90b338770ce68f8a51df3301ea1320169f69d6b649171eb
    ```
    Expected: `covenant ID matches` — Silverscript ABIs, physical states and
    derived scripts checked. `stake_pool_v2_genesis_proof.json` still verifies
@@ -100,7 +103,10 @@ tokens today.
 
 | File | Purpose |
 |---|---|
-| `stake_pool_v3.sil` | Staking covenant source, **live** (proof pending) |
+| `stake_pool_v3.sil` | Staking covenant source, **live** |
+| `stake_pool_v3_artifact.json` | Compiler artifact / Silverscript ABI |
+| `stake_pool_v3_bootstrap.json` | Genesis group: authorizing outpoint, output, initial state |
+| `stake_pool_v3_genesis_proof.json` | Self-contained proof package |
 | `stake_pool_v2.sil` | Retired staking covenant source (SilverScript) |
 | `stake_pool_v2_artifact.json` | Compiler artifact / ABI |
 | `stake_pool_v2_bootstrap.json` | Genesis group: authorizing outpoint, output, initial state |
