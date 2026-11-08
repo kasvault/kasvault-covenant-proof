@@ -1,0 +1,20 @@
+{
+  "authorizing_outpoint": {
+    "transactionId": "589fb6921ba5138ac8d4501ec177b4778e7996f9a846f68a1596c6d920393e16",
+    "index": 2
+  },
+  "outputs": [
+    {
+      "index": 0,
+      "value": 2408439450,
+      "abi_index": 0,
+      "contract": "StakePoolV3",
+      "runtime_state": {
+        "kas": { "kind": "int", "value": 2308439450 },
+        "totalTok": { "kind": "int", "value": 1550000 },
+        "rewardPerTok": { "kind": "int", "value": 2291083468 },
+        "deposits": { "kind": "int", "value": 4 }
+      }
+    }
+  ]
+}
