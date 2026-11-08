@@ -55,6 +55,26 @@ is allowed to do —
 `topup` (owner-signed, money in), `drain` (owner-signed exit), and the three
 recovery entries `requestRecovery` / `cancelRecovery` / `executeRecovery`.
 
+## Reproduce the ABI from source
+
+The proof ships the Silverscript ABI and the covenant states; it does not
+compile Solidity-style source for you. That hop is one deterministic command,
+and it lands byte-identical:
+
+```sh
+silverc stake_pool_v3.sil --constructor-args stake_pool_v3_compile_args.json -o abi.json
+diff <(jq -S . abi.json) <(jq -S . stake_pool_v3_artifact.json)   # no output = identical
+```
+
+`stake_pool_v3_compile_args.json` is intentionally all zeros. The constructor
+arguments end up embedded in the compiled script (which is why the real values
+live in the bootstrap and not in the shipped ABI), so placeholders are enough
+to prove that the published ABI is exactly what the published source compiles
+to. With the real arguments the artifact differs, and that is expected.
+
+So the full chain is: source → ABI (silverc, above), ABI + genesis state →
+script and covenant ID (argentc, below). Both steps are repeatable by anyone.
+
 ## Verify it yourself
 
 1. **Build the verifier** (Argent CLI, Sutton's genesis-proof branch):
@@ -106,6 +126,7 @@ tokens today.
 | `stake_pool_v3.sil` | Staking covenant source, **live** |
 | `stake_pool_v3_artifact.json` | Compiler artifact / Silverscript ABI |
 | `stake_pool_v3_bootstrap.json` | Genesis group: authorizing outpoint, output, initial state |
+| `stake_pool_v3_compile_args.json` | Placeholder constructor args, for reproducing the ABI from source |
 | `stake_pool_v3_genesis_proof.json` | Self-contained proof package |
 | `stake_pool_v2.sil` | Retired staking covenant source (SilverScript) |
 | `stake_pool_v2_artifact.json` | Compiler artifact / ABI |
