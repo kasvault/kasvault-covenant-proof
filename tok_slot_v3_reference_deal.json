@@ -1,0 +1,55 @@
+{
+  "_note": "Reference deal for the KasVault OTC swap slot v3. Every value below was read back from chain on 2026-11-08; the four transaction hops are the complete life of one deal (kvault sold for QTC).",
+  "deal": {
+    "id": "6ad77c45cf49c92e9edc40f8",
+    "direction": "sell_kvault",
+    "date": "2026-10-20",
+    "kvault": 10000,
+    "qtc": 0.00040026
+  },
+  "slot": {
+    "covenant_id": "92e525982333abe711ee14cc86922ff445059868098d6683c9c6bb3fd4a39a7d",
+    "address": "kaspa:pr8440jwta8kgwq4xgr4hy5r4q6tgxath3r8gu92r07qckyyh820y8q6lvj7s",
+    "carrier_sompi": 100000000,
+    "state": {
+      "hash": "d5b3dc171082aa1373d26ae48708ce35f1b94945e0adbc3b706f3cae78d620a8",
+      "buyer": "87e2808a632bd08c5fa9d8985528e651d8895bfcbec081982a1d8e154318c0ad",
+      "deadline_ms": "1792509666297",
+      "amount": "10000",
+      "presenceHash": "eb241b44d9da9acd5bc8faea5d20ae88307e1c8638dfb6631d1cc95139f61320",
+      "deskPub": "63c15a20b01aa9c9c095c20b7144fc6d430004bc3ca4d20b8b387ba52f6676c6",
+      "refundHash": "1377f2edd66dc4e075e51d5ab72fb99e5103689b0a20c9350a51774603fb849a"
+    }
+  },
+  "hops": {
+    "slot_genesis": {
+      "chain": "kaspa",
+      "txid": "d986b5fa069f13108072ba1413750d3c531a1710d922a60e4e95fa4ebb8f9158",
+      "url": "https://kaspa.stream/txs/d986b5fa069f13108072ba1413750d3c531a1710d922a60e4e95fa4ebb8f9158",
+      "check": "output 0 carries covenantId 92e525982333abe711ee14cc86922ff445059868098d6683c9c6bb3fd4a39a7d and 1.00000000 KAS"
+    },
+    "qtc_lock": {
+      "chain": "qtc",
+      "txid": "8220d1f48c000c77fc9e51ad5ca9bafc68b172ddf1f4ea97dc8f7ad51b280475",
+      "url": "https://explorer.superquantum.io/tx/8220d1f48c000c77fc9e51ad5ca9bafc68b172ddf1f4ea97dc8f7ad51b280475",
+      "check": "buyer locks 40026 sat in a P2WSH hash lock"
+    },
+    "qtc_claim": {
+      "chain": "qtc",
+      "txid": "b9810e2e02321d0bf99ec9b2632de90c950c8ad10c3c49419eb33fec5b634560",
+      "url": "https://explorer.superquantum.io/tx/b9810e2e02321d0bf99ec9b2632de90c950c8ad10c3c49419eb33fec5b634560",
+      "block": 112859,
+      "check": "the desk spends the hash lock, so the witness now carries the 32-byte preimage S; blake2b(S) equals the slot's hash"
+    },
+    "kvault_relay": {
+      "chain": "kaspa",
+      "txid": "8316eed76efb6c3ef0bf24c7c4414b7d27449897644ced04889dee61cc3d38f4",
+      "url": "https://kaspa.stream/txs/8316eed76efb6c3ef0bf24c7c4414b7d27449897644ced04889dee61cc3d38f4",
+      "check": "IN0 is the slot covenant, OUT0 is the 0.5 KAS KCC20 carrier holding the 10000 kvault; consensus accepted the tx, which proves blake2b(OUT0 scriptPubKey) == presenceHash"
+    }
+  },
+  "reproduce": {
+    "source_to_abi": "silverc tok_slot_v3.sil --constructor-args tok_slot_v3_compile_args.json -o abi.json && diff <(jq -S . abi.json) <(jq -S . tok_slot_v3_artifact.json)",
+    "note": "The compile args are placeholders, exactly as for the stake pool: the real values are the state fields above and end up in the compiled script, not in the shipped ABI."
+  }
+}

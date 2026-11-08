@@ -1,4 +1,4 @@
-# KasVault — Covenant Genesis Proofs (Buyback Vault v10 + StakePool v3)
+# KasVault — Covenant Proofs (Buyback Vault v10 · StakePool v3 · OTC swap slot v3)
 
 This repository lets anyone verify, on-chain and independently, that the
 KasVault covenants holding the project's KAS are **exactly** the published
@@ -55,6 +55,65 @@ is allowed to do —
 `topup` (owner-signed, money in), `drain` (owner-signed exit), and the three
 recovery entries `requestRecovery` / `cancelRecovery` / `executeRecovery`.
 
+### OTC swap slot v3 — kvault deals (live since 2026-10-17)
+
+`tok_slot_v3.sil` is the covenant behind a kvault OTC deal. Each deal creates
+its own slot instance holding the agreed amount of kvault, so there is no single
+covenant ID for this family: the ID belongs to the deal. A buyer can read the
+slot's amount, deadline and destination rules before sending anything.
+
+Three entries exist, and each one pays to a destination that is hash-pinned in
+the script at genesis:
+
+| Entry | Who may spend | Pays to |
+|---|---|---|
+| `claim` | buyer signature + preimage `S` | `presence(buyer, amount)` |
+| `relay` | desk signature + preimage `S` | `presence(buyer, amount)` |
+| `refund` | desk signature, after deadline `T1` | `presence(desk, amount)` |
+
+The `relay` entry exists so a buyer who does not want to run covenant tooling
+can still receive the tokens: the desk submits the claim on their behalf, and it
+lands in the same pinned cell as `claim`. `presenceHash` and `refundHash` are
+constructor arguments, so both destinations are fixed the moment the slot is
+created.
+
+**Why v3.** In v2 and v2p only the payout to the buyer was pinned; the refund
+destination was bound to the desk signature alone, so a compromised desk key
+could have refunded a deal to itself. v3 pins the refund to
+`presence(desk, amount)` as well. A stolen desk key can still withhold a deal
+until the deadline, but it cannot redirect the deal tokens: claim and relay
+always end at the buyer's cell, refund always ends at the desk's own cell.
+
+**Transaction shape.** The tokens live in a KCC20 cell that the covenant
+co-spends as `IN1` (witness `[0]`); the slot's own KAS is the carrier, `OUT0`
+must be exactly 0.5 KAS, the KCC20 carrier, and `OUT1` takes the KAS rest.
+
+#### Reference deal
+
+One real deal, start to finish, so this stays checkable instead of theoretical:
+10,000 kvault sold for 0.00040026 QTC on 2026-10-20.
+
+| Hop | Chain | Transaction |
+|---|---|---|
+| slot genesis, 10,000 kvault | Kaspa | [`d986b5fa…`](https://kaspa.stream/txs/d986b5fa069f13108072ba1413750d3c531a1710d922a60e4e95fa4ebb8f9158) |
+| buyer locks the QTC | QTC | [`8220d1f4…`](https://explorer.superquantum.io/tx/8220d1f48c000c77fc9e51ad5ca9bafc68b172ddf1f4ea97dc8f7ad51b280475) |
+| desk claims the QTC, revealing `S` | QTC | [`b9810e2e…`](https://explorer.superquantum.io/tx/b9810e2e02321d0bf99ec9b2632de90c950c8ad10c3c49419eb33fec5b634560) |
+| kvault relayed to the buyer | Kaspa | [`8316eed7…`](https://kaspa.stream/txs/8316eed76efb6c3ef0bf24c7c4414b7d27449897644ced04889dee61cc3d38f4) |
+
+What the four hops establish:
+
+1. The slot genesis output carries `covenantId 92e52598…` and 1 KAS. That is the
+   covenant instance which held the 10,000 kvault, and `tok_slot_v3_artifact.json`
+   is the ABI it was compiled from — reproducible from the source below.
+2. The QTC claim is the moment the preimage becomes public: `blake2b(S)` of the
+   preimage in that witness equals the slot's `hash` field.
+3. The Kaspa relay proves the payment rule rather than describing it: consensus
+   accepted a transaction whose first output is the buyer's cell, and the script
+   rejects every destination that does not match `presenceHash`.
+
+`tok_slot_v3_reference_deal.json` carries the full slot state, the deal terms and
+each hop with the exact check to run.
+
 ## Reproduce the ABI from source
 
 The proof ships the Silverscript ABI and the covenant states; it does not
@@ -66,7 +125,13 @@ silverc stake_pool_v3.sil --constructor-args stake_pool_v3_compile_args.json -o 
 diff <(jq -S . abi.json) <(jq -S . stake_pool_v3_artifact.json)   # no output = identical
 ```
 
-`stake_pool_v3_compile_args.json` is intentionally all zeros. The constructor
+```sh
+silverc tok_slot_v3.sil --constructor-args tok_slot_v3_compile_args.json -o abi.json
+diff <(jq -S . abi.json) <(jq -S . tok_slot_v3_artifact.json)   # no output = identical
+```
+
+`stake_pool_v3_compile_args.json` and `tok_slot_v3_compile_args.json` are
+intentionally all zeros. The constructor
 arguments end up embedded in the compiled script (which is why the real values
 live in the bootstrap and not in the shipped ABI), so placeholders are enough
 to prove that the published ABI is exactly what the published source compiles
@@ -109,6 +174,9 @@ script and covenant ID (argentc, below). Both steps are repeatable by anyone.
 | StakePool v1 | `2dcc2fd2…` | superseded 2026-10-07 (v2 migration), all holdings unstaked |
 | StakePool v2 | `85f1d6c0…` | retired 2026-10-17 (v3), proof kept |
 | StakePool v3 | `598b4b8e…` | **live** |
+| OTC swap slot v1 | per deal | prototype, superseded 2026-10-17 |
+| OTC swap slot v2 / v2p | per deal | superseded 2026-10-17 (v3 pins the refund destination) |
+| OTC swap slot v3 | per deal | **live** |
 
 The v1→v2 pool migration (2026-10-07) moved every staked position through
 on-chain unstake and re-stake. No funds were carried by trust — every UTXO
@@ -136,9 +204,16 @@ tokens today.
 | `vault_v10_artifact.json` | Compiler artifact / ABI |
 | `vault_v10_bootstrap.json` | Genesis group (temporal encoded as int, per covenant standard) |
 | `vault_v10_genesis_proof.json` | Self-contained proof package |
+| `tok_slot_v3.sil` | OTC deal slot source, **live** |
+| `tok_slot_v3_artifact.json` | Compiler artifact / Silverscript ABI |
+| `tok_slot_v3_compile_args.json` | Placeholder constructor args, for reproducing the ABI from source |
+| `tok_slot_v3_reference_deal.json` | One settled deal: slot state, all four hops, what each proves |
 | `vault_v8.sil`, `vault_v9.sil` … | History proof files (still verifiable) |
 
 **Token:** kvault (KCC20 on KRON) — https://kron.technology/token/kvault
 **Staking portal:** https://lighthearted-swan-ef22f8.netlify.app/
+
+**License:** MIT, see [`LICENSE`](LICENSE). The code is published so it can be
+rebuilt and checked, not as an offer or as investment advice.
 
 **Zero dev allocation. The vault can only buy. Verify, don't trust.**

@@ -1,0 +1,60 @@
+pragma silverscript ^0.1.0;
+
+// =====================================================================
+// KasVault OTC-Desk — kvault-Token-Swap-Slot v3 (PER-DEAL-Familie)
+// v3 = v2p + REFUND-ZIEL-PIN: Der Refund-Zieloutput ist on-chain an
+// presence(desk, amount) gepinnt (refundHash), NICHT mehr nur an die
+// Desk-Signatur gebunden. Damit gilt fuer ALLE drei Entries: ein rogue
+// Desk-Key kann die Deal-Token NIE umleiten — Claim/Relay nur an
+// presence(buyer), Refund nur an presence(desk) (Review P5.2, P0-1).
+//
+//   claim (Buyer-Sig + S)  -> presence(buyer)  [presenceHash-Pin]
+//   relay (Desk-Sig  + S)  -> presence(buyer)  [presenceHash-Pin]
+//   refund(Desk-Sig, T1)   -> presence(desk)   [refundHash-Pin — NEU]
+//
+// TX-Konventionen: IN0 = Slot-Covenant, IN1 = Token-Zelle (Witness [0]),
+// OUT0 = KCC20-Presence (Carrier exakt 0,5 KAS), OUT1 = KAS-Rest > 0.
+// =====================================================================
+contract TokSlotV3(byte[32] initHash, byte[32] initBuyer, temporal initDeadline, int initAmount, byte[32] initPresenceHash, byte[32] initDeskPub, byte[32] initRefundHash) {
+    byte[32] hash = initHash;          // blake2b(S) — S wird im QTC-Claim offengelegt
+    byte[32] buyer = initBuyer;        // Buyer x-only Pubkey
+    temporal deadline = initDeadline;  // T1 (ms): Refund-Freigabe
+    int amount = initAmount;           // dealte kvault (Doku/Buyer-Verifikation)
+    byte[32] presenceHash = initPresenceHash; // blake2b(presence(buyer, amount)-Script)
+    byte[32] deskPub = initDeskPub;    // Desk x-only Pubkey (INIT-PARAM — Key-Rotation ohne SIL-Aenderung)
+    byte[32] refundHash = initRefundHash;     // blake2b(presence(deskPub, amount)-Script) — NEU (P5.2-P0-1)
+
+    // --- Claim: Buyer-Sig + S — Token an presence(buyer) [gepinnt] ------
+    entry claim(sig s, byte[32] preimage) {
+        require(checkSig(s, pubkey(buyer)));
+        require(blake2b(preimage.slice(0, 32)) == hash);
+        require(tx.outputs[0].value == 50000000);  // KCC20-Carrier exakt 0,5 KAS
+        require(blake2b(tx.outputs[0].scriptPubKey) == presenceHash);
+        require(tx.outputs[1].value > 0);           // KAS-Rest an Buyer
+        // Terminal — die Familie endet, Token-Co-Spend zahlt OUT0 = presence(buyer).
+    }
+
+    // --- Relay: Desk-Sig + S — Agent-Relay NUR an presence(buyer) -------
+    entry relay(sig s, byte[32] preimage) {
+        pubkey agent = pubkey(deskPub);
+        require(checkSig(s, agent));
+        require(blake2b(preimage.slice(0, 32)) == hash);
+        require(tx.outputs[0].value == 50000000);
+        require(blake2b(tx.outputs[0].scriptPubKey) == presenceHash);
+        require(tx.outputs[1].value > 0);
+        // Terminal — Ziel unveraenderbar presence(buyer).
+    }
+
+    // --- Refund nach T1: Desk-Sig — Token zurueck an presence(desk) -----
+    // NEU in v3: OUT0-Script-Pin — Refund kann die Token NICHT mehr an
+    // eine fremde Presence umleiten (Asymmetrie-Fix, Review P5.2).
+    entry refund(sig s) {
+        pubkey agent = pubkey(deskPub);
+        require(checkSig(s, agent));
+        require(tx.time >= deadline);
+        require(tx.outputs[0].value == 50000000);
+        require(blake2b(tx.outputs[0].scriptPubKey) == refundHash);
+        require(tx.outputs[1].value > 0);
+        // Terminal — Ziel unveraenderbar presence(desk).
+    }
+}
